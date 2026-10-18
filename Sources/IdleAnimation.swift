@@ -55,11 +55,15 @@ final class IdleAnimationView: NSView {
     private let walkingFrames: [IdleFrame]
     private let heldFrames: [IdleFrame]
     private let workingFrames: [IdleFrame]
+    private let cheeringFrames: [IdleFrame]
+    var onDemoMessage: (() -> Void)?
     private var dragSession = PetDragSession()
     var onDrop: ((NSPoint, TimeInterval) -> Void)?
     private var motion = PetMotion(x: 0, activity: .idle, facingRight: true)
     var onTick: ((TimeInterval) -> PetMotion)?
     private var poseStartedAt: CFTimeInterval = 0
+    private var workingTransitionFrom: Int?
+    private var workingTransitionAt: CFTimeInterval = 0
     private var timer: Timer?
     private var startedAt: CFTimeInterval = 0
     private let frameDuration: CFTimeInterval = 0.4
@@ -67,13 +71,14 @@ final class IdleAnimationView: NSView {
 
     override var isOpaque: Bool { false }
 
-    init(frames: [IdleFrame], walkingFrames: [IdleFrame], heldFrames: [IdleFrame], workingFrames: [IdleFrame]) {
+    init(frames: [IdleFrame], walkingFrames: [IdleFrame], heldFrames: [IdleFrame], workingFrames: [IdleFrame], cheeringFrames: [IdleFrame]) {
         precondition(!frames.isEmpty && walkingFrames.count == WalkCycle.count && heldFrames.count == HandRaise.count
-                     && workingFrames.count == TypingAnimation.count)
+                     && workingFrames.count == TypingAnimation.count && cheeringFrames.count == 4)
         self.frames = frames
         self.walkingFrames = walkingFrames
         self.heldFrames = heldFrames
         self.workingFrames = workingFrames
+        self.cheeringFrames = cheeringFrames
         super.init(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
     }
 
@@ -81,6 +86,17 @@ final class IdleAnimationView: NSView {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard containsCharacter(at: convert(event.locationInWindow, from: nil)) else { return }
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "演示消息提醒", action: #selector(demoMessage), keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func demoMessage() { onDemoMessage?() }
 
     override func mouseDown(with event: NSEvent) {
         guard !dragSession.isActive, let window = window else { return }
@@ -146,6 +162,8 @@ final class IdleAnimationView: NSView {
             return heldFrames[HandRaise.clickFrameIndex(at: elapsed) ?? 0].contains(point)
         case .working:
             return workingFrames[motion.spriteIndex].contains(point)
+        case .celebrating:
+            return cheeringFrames[motion.spriteIndex].contains(point)
         default:
             let index = Int(elapsed / frameDuration) % frames.count
             return frames[index].contains(point) || frames[(index + 1) % frames.count].contains(point)
@@ -167,6 +185,16 @@ final class IdleAnimationView: NSView {
                 }
                 if next.activity != self.motion.activity || next.facingRight != self.motion.facingRight {
                     self.poseStartedAt = now
+                }
+                if next.activity == .working && self.motion.activity == .working {
+                    if next.spriteIndex != self.motion.spriteIndex
+                        && (next.spriteIndex == TypingAnimation.thinkingIndex
+                            || self.motion.spriteIndex == TypingAnimation.thinkingIndex) {
+                        self.workingTransitionFrom = self.motion.spriteIndex
+                        self.workingTransitionAt = now
+                    }
+                } else {
+                    self.workingTransitionFrom = nil
                 }
                 self.motion = next
             }
@@ -222,6 +250,18 @@ final class IdleAnimationView: NSView {
         }
         if motion.activity == .working {
             let frame = workingFrames[motion.spriteIndex]
+            let progress = min(1, max(0, (CACurrentMediaTime() - workingTransitionAt) / 0.14))
+            if let previous = workingTransitionFrom, progress < 1 {
+                let old = workingFrames[previous]
+                old.image.draw(in: old.drawingRect, from: .zero, operation: .plusLighter, fraction: 1 - progress)
+                frame.image.draw(in: frame.drawingRect, from: .zero, operation: .plusLighter, fraction: progress)
+            } else {
+                frame.image.draw(in: frame.drawingRect, from: .zero, operation: .sourceOver, fraction: 1)
+            }
+            return
+        }
+        if motion.activity == .celebrating {
+            let frame = cheeringFrames[motion.spriteIndex]
             frame.image.draw(in: frame.drawingRect, from: .zero, operation: .sourceOver, fraction: 1)
             return
         }

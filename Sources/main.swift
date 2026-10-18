@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private var schedule: WanderSchedule?
     private var inputMonitor: InputActivityMonitor?
     private var typingTestWindow: NSWindow?
+    private var messageReminder: MessageReminderController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         func loadFrames(_ prefix: String) -> [IdleFrame] {
@@ -29,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             }
         }
         idleFrames = loadFrames("scratch")
+        let cheeringFrames = loadFrames("cheer")
         let walkingFrames: [IdleFrame]
         if let baseURL = Bundle.main.url(forResource: "walk-cycle-v3-arms", withExtension: "png"),
            let passingURL = Bundle.main.url(forResource: "walk-passing-v4", withExtension: "png") {
@@ -38,10 +40,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
         let heldFrames = Bundle.main.url(forResource: "click-hands-v1", withExtension: "png")
             .map { HandRaise.load(from: $0) } ?? []
-        let workingFrames = Bundle.main.url(forResource: "typing-v1", withExtension: "png")
-            .map { TypingAnimation.load(from: $0) } ?? []
+        let workingFrames: [IdleFrame]
+        if let typingURL = Bundle.main.url(forResource: "typing-v1", withExtension: "png"),
+           let thinkingURL = Bundle.main.url(forResource: "thinking-hand-v2", withExtension: "png") {
+            workingFrames = TypingAnimation.load(from: typingURL, thinkingURL: thinkingURL)
+        } else {
+            workingFrames = []
+        }
         guard idleFrames.count == 4, walkingFrames.count == WalkCycle.count,
-              heldFrames.count == HandRaise.count, workingFrames.count == TypingAnimation.count else {
+              heldFrames.count == HandRaise.count, workingFrames.count == TypingAnimation.count,
+              cheeringFrames.count == 4 else {
             NSLog("奶蛙：缺少待机、走路、换脚、举手或打字素材。")
             NSApp.terminate(nil)
             return
@@ -53,6 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let accessItem = NSMenuItem(title: "启用输入陪伴…", action: #selector(enableTypingAccess), keyEquivalent: "")
         accessItem.target = self
         appMenu.addItem(accessItem)
+        let messageItem = NSMenuItem(title: "演示消息提醒", action: #selector(showDemoMessage), keyEquivalent: "")
+        messageItem.target = self
+        appMenu.addItem(messageItem)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "退出奶蛙", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
@@ -75,10 +86,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         window.isReleasedWhenClosed = false
 
         let animationView = IdleAnimationView(frames: idleFrames, walkingFrames: walkingFrames,
-                                             heldFrames: heldFrames, workingFrames: workingFrames)
+                                             heldFrames: heldFrames, workingFrames: workingFrames,
+                                             cheeringFrames: cheeringFrames)
         window.contentView = animationView
         window.orderFrontRegardless()
         petWindow = window
+        let reminder = MessageReminderController(petWindow: window)
+        messageReminder = reminder
+        animationView.onDemoMessage = { [weak self] in self?.showDemoMessage() }
 
         self.animationView = animationView
         var origin = window.frame.origin
@@ -115,6 +130,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             schedule.reset(origin: newOrigin.x, screen: homeScreen, at: elapsed)
         }
         animationView.onTick = { [weak window] elapsed in
+            if reminder.isActive {
+                origin = window?.frame.origin ?? origin
+                typingApproach = nil
+                schedule.reset(origin: origin.x, screen: homeScreen, at: elapsed)
+                return PetMotion(x: origin.x, activity: .celebrating, facingRight: true,
+                                 phase: "message", spriteIndex: reminder.frameIndex)
+            }
             let typing = inputMonitor.snapshot()
             let finishingEntry = typingApproach.map { !$0.hasArrived(at: elapsed) } ?? false
             let motion: PetMotion
@@ -156,6 +178,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         NSLog("Typing access: %@", inputMonitor.isTrusted ? "granted" : "required")
         if testMode { showTypingTest() }
         else if !inputMonitor.isTrusted { inputMonitor.requestAccess() }
+        if CommandLine.arguments.contains("--demo-message") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.showDemoMessage() }
+        }
+    }
+
+    @objc private func showDemoMessage() {
+        guard let window = petWindow else { return }
+        // Bring an offscreen pet back and leave enough room for the bubble.
+        let screen = (window.screen ?? NSScreen.main)?.visibleFrame ?? window.frame
+        let x = min(max(window.frame.minX, screen.minX + 50), screen.maxX - 250)
+        let y = min(max(window.frame.minY, screen.minY), max(screen.minY, screen.maxY - 278))
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+        messageReminder?.show(message: "你有一条新消息，记得看看哦！")
     }
 
     @objc private func enableTypingAccess() {
@@ -202,6 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        messageReminder?.stop()
         inputMonitor?.stop()
         animationView?.stop()
     }

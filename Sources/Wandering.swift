@@ -1,7 +1,7 @@
 import AppKit
 
 enum PetActivity: String {
-    case idle, walking, hidden, peeking, held, clicked, working
+    case idle, walking, hidden, peeking, held, clicked, working, celebrating
 }
 
 struct PetMotion {

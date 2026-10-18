@@ -24,6 +24,16 @@ struct TypingTests {
         assert(input.snapshot(at: 3).frameIndex == 4)
         assert(input.snapshot(at: 3.12).frameIndex == 3)
         assert(input.snapshot(at: 3.21).frameIndex == 0)
+        assert(input.snapshot(at: 4.19).frameIndex == 0)
+        assert(input.snapshot(at: 4.21).frameIndex == TypingAnimation.thinkingIndex)
+        assert(input.snapshot(at: 30).frameIndex == TypingAnimation.thinkingIndex)
+        input.recordStroke(at: 30)
+        assert(input.snapshot(at: 30).frameIndex == 2, "Resume typing immediately leaves thinking")
+        input.setFocused(false)
+        assert(input.snapshot(at: 40).frameIndex == 0 && !input.snapshot(at: 40).focused)
+        input.setFocused(true)
+        assert(input.snapshot(at: 50).frameIndex == 0, "Focus alone must not reuse an old thinking timer")
+        print("PASS: 1.2s typing pause enters thinking; short pauses rest hands; typing resumes immediately; blur clears thinking")
         print("PASS: focus takes out laptop; each keystroke alternates hands; stopped typing rests hands; lost focus stops work")
 
         let screen = NSRect(x: 100, y: 0, width: 1280, height: 800)
@@ -45,10 +55,11 @@ struct TypingTests {
         print("PASS: moving pet sits exactly in place; both screen edges return inward before sitting; entry takes at most 0.65 s")
 
         _ = NSApplication.shared
-        let frames = TypingAnimation.load(from: URL(fileURLWithPath: CommandLine.arguments[1]))
-        assert(frames.count == 5 && Set(frames.compactMap { $0.image.tiffRepresentation }).count == 5)
+        let frames = TypingAnimation.load(from: URL(fileURLWithPath: CommandLine.arguments[1]),
+                                          thinkingURL: URL(fileURLWithPath: CommandLine.arguments[2]))
+        assert(frames.count == 6 && Set(frames.compactMap { $0.image.tiffRepresentation }).count == 6)
         let reference = NSBitmapImageRep(data: frames[0].image.tiffRepresentation!)!
-        for index in 1..<frames.count {
+        for index in 1..<TypingAnimation.typingCount {
             let pressed = NSBitmapImageRep(data: frames[index].image.tiffRepresentation!)!
             assert(frames[index].drawingRect == frames[0].drawingRect)
             assert(pressed.pixelsWide == reference.pixelsWide && pressed.pixelsHigh == reference.pixelsHigh)
@@ -73,10 +84,34 @@ struct TypingTests {
             assert(changed < reference.pixelsWide * reference.pixelsHigh / 20)
         }
         print("PASS: fixed laptop/body pixels, identical drawing bounds, and isolated alternating hand presses")
-        let preview = NSImage(size: NSSize(width: 1000, height: 200))
+        let thinkingFrame = frames[TypingAnimation.thinkingIndex]
+        let thinking = NSBitmapImageRep(data: thinkingFrame.image.tiffRepresentation!)!
+        assert(thinkingFrame.drawingRect == frames[0].drawingRect)
+        assert(thinking.pixelsWide == reference.pixelsWide && thinking.pixelsHigh == reference.pixelsHigh)
+        var changedThinking = 0
+        for y in 0..<reference.pixelsHigh {
+            for x in 0..<reference.pixelsWide {
+                let before = reference.colorAt(x: x, y: y)!
+                let after = thinking.colorAt(x: x, y: y)!
+                if before != after {
+                    changedThinking += 1
+                    assert(ThinkingPose.weight(x: Double(x) / Double(reference.pixelsWide),
+                                               y: Double(y) / Double(reference.pixelsHigh)) > 0,
+                           "Thinking must not change head/body/feet or pixels outside the arm patch")
+                    assert(!ThinkingPose.protectsLaptop(x: Double(x) / Double(reference.pixelsWide),
+                                                       y: Double(y) / Double(reference.pixelsHigh)),
+                           "Existing laptop pixels must remain identical")
+                }
+            }
+        }
+        assert(changedThinking > 1000 && changedThinking < reference.pixelsWide * reference.pixelsHigh / 8)
+        try thinking.representation(using: .png, properties: [:])!
+            .write(to: URL(fileURLWithPath: "/tmp/milkfrog-thinking-fixed.png"))
+        print("PASS: thinking changes only the arm patch; head, body, visible laptop pixels, feet, size and drawing bounds stay identical")
+        let preview = NSImage(size: NSSize(width: 1200, height: 200))
         preview.lockFocus()
         NSColor(calibratedWhite: 0.85, alpha: 1).setFill()
-        NSRect(x: 0, y: 0, width: 1000, height: 200).fill()
+        NSRect(x: 0, y: 0, width: 1200, height: 200).fill()
         for (index, frame) in frames.enumerated() {
             assert(frame.drawingRect.height == 120 && frame.drawingRect.minY == 32)
             assert(NSRect(x: 0, y: 0, width: 200, height: 200).contains(frame.drawingRect))

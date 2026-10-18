@@ -6,6 +6,7 @@ struct TypingSnapshot {
 }
 
 struct TypingActivity {
+    static let thinkingDelay: TimeInterval = 1.2
     private(set) var focused = false
     private var lastStroke: TimeInterval?
     private var nextHand = 1
@@ -29,6 +30,9 @@ struct TypingActivity {
     func snapshot(at time: TimeInterval) -> TypingSnapshot {
         guard focused, let lastStroke else { return TypingSnapshot(focused: focused, frameIndex: 0) }
         let elapsed = time - lastStroke
+        if elapsed >= Self.thinkingDelay {
+            return TypingSnapshot(focused: true, frameIndex: TypingAnimation.thinkingIndex)
+        }
         // An immediate press remains visible even during fast typing. The half
         // press then eases the hand back without moving the computer or body.
         let pose = elapsed >= 0 && elapsed < 0.11 ? 2 : (elapsed >= 0.11 && elapsed < 0.20 ? 1 : 0)
@@ -65,15 +69,17 @@ struct TypingApproach {
 }
 
 enum TypingAnimation {
-    static let count = 5
-    static func load(from url: URL) -> [IdleFrame] {
+    static let typingCount = 5
+    static let thinkingIndex = 5
+    static let count = 6
+    static func load(from url: URL, thinkingURL: URL) -> [IdleFrame] {
         // Every pose comes from the same image. Independent generated cells have
         // slightly different laptops, so never use them as full typing frames.
         guard let base = WalkCycle.loadSheet(from: url, columns: 3, rows: 1, frameHeight: 120).first,
               let data = base.image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: data) else { return [] }
         var frames = [base]
-        for index in 1..<count {
+        for index in 1..<typingCount {
             let hand = (index - 1) / 2
             let depth = index % 2 == 0 ? 0.055 : 0.0275
             guard let pressed = bitmap.copy() as? NSBitmapImageRep else { return [] }
@@ -102,6 +108,8 @@ enum TypingAnimation {
             guard let frame = IdleFrame(image: image, targetHeight: 120) else { return [] }
             frames.append(frame)
         }
+        guard let thinking = ThinkingPose.make(base: base, patchURL: thinkingURL) else { return [] }
+        frames.append(thinking)
         return frames
     }
 
