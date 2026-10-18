@@ -1,7 +1,7 @@
 import AppKit
 
 enum PetActivity: String {
-    case idle, walking, hidden, peeking, held, clicked
+    case idle, walking, hidden, peeking, held, clicked, working
 }
 
 struct PetMotion {
@@ -10,6 +10,7 @@ struct PetMotion {
     let facingRight: Bool
     var rotation: CGFloat = 0
     var phase: String = "idle"
+    var spriteIndex: Int = 0
 }
 
 struct WalkingTrip {

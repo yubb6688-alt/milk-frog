@@ -18,7 +18,7 @@ enum WalkCycle {
         return [original[0], passing[0]] + Array(original[1...6]) + [passing[1], original[7]]
     }
 
-    static func loadSheet(from url: URL, columns: Int, rows: Int) -> [IdleFrame] {
+    static func loadSheet(from url: URL, columns: Int, rows: Int, frameHeight: CGFloat = 132) -> [IdleFrame] {
         guard let image = NSImage(contentsOf: url),
               let sheet = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return [] }
         return (0..<(columns * rows)).compactMap { index in
@@ -32,7 +32,7 @@ enum WalkCycle {
             let y1 = (row + 1) * sheet.height / rows
             let rect = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
             guard let cell = sheet.cropping(to: rect) else { return nil }
-            return IdleFrame(image: NSImage(cgImage: cell, size: rect.size))
+            return IdleFrame(image: NSImage(cgImage: cell, size: rect.size), targetHeight: frameHeight)
         }
     }
 }

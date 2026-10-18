@@ -6,7 +6,7 @@ struct IdleFrame {
     let drawingRect: NSRect
     private let hitBitmap: NSBitmapImageRep
 
-    init?(image: NSImage) {
+    init?(image: NSImage, targetHeight: CGFloat = 132) {
         guard let data = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: data),
               let cgImage = bitmap.cgImage else { return nil }
@@ -35,7 +35,7 @@ struct IdleFrame {
 
         // Match the previous on-screen size; every pose has the same height,
         // horizontal center and ground line inside the unchanged 200 × 200 window.
-        let height: CGFloat = 132
+        let height = targetHeight
         let width = crop.width * height / crop.height
         drawingRect = NSRect(x: (200 - width) / 2, y: 32, width: width, height: height)
     }
@@ -54,6 +54,7 @@ final class IdleAnimationView: NSView {
     private let frames: [IdleFrame]
     private let walkingFrames: [IdleFrame]
     private let heldFrames: [IdleFrame]
+    private let workingFrames: [IdleFrame]
     private var dragSession = PetDragSession()
     var onDrop: ((NSPoint, TimeInterval) -> Void)?
     private var motion = PetMotion(x: 0, activity: .idle, facingRight: true)
@@ -66,11 +67,13 @@ final class IdleAnimationView: NSView {
 
     override var isOpaque: Bool { false }
 
-    init(frames: [IdleFrame], walkingFrames: [IdleFrame], heldFrames: [IdleFrame]) {
-        precondition(!frames.isEmpty && walkingFrames.count == WalkCycle.count && heldFrames.count == HandRaise.count)
+    init(frames: [IdleFrame], walkingFrames: [IdleFrame], heldFrames: [IdleFrame], workingFrames: [IdleFrame]) {
+        precondition(!frames.isEmpty && walkingFrames.count == WalkCycle.count && heldFrames.count == HandRaise.count
+                     && workingFrames.count == TypingAnimation.count)
         self.frames = frames
         self.walkingFrames = walkingFrames
         self.heldFrames = heldFrames
+        self.workingFrames = workingFrames
         super.init(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
     }
 
@@ -141,6 +144,8 @@ final class IdleAnimationView: NSView {
             return heldFrames[HandRaise.heldFrameIndex(at: elapsed)].contains(point)
         case .clicked:
             return heldFrames[HandRaise.clickFrameIndex(at: elapsed) ?? 0].contains(point)
+        case .working:
+            return workingFrames[motion.spriteIndex].contains(point)
         default:
             let index = Int(elapsed / frameDuration) % frames.count
             return frames[index].contains(point) || frames[(index + 1) % frames.count].contains(point)
@@ -213,6 +218,11 @@ final class IdleAnimationView: NSView {
         if motion.activity == .peeking {
             let head = frames[3]
             head.image.draw(in: head.drawingRect, from: .zero, operation: .sourceOver, fraction: 1)
+            return
+        }
+        if motion.activity == .working {
+            let frame = workingFrames[motion.spriteIndex]
+            frame.image.draw(in: frame.drawingRect, from: .zero, operation: .sourceOver, fraction: 1)
             return
         }
         // Derive the frame from a monotonic clock so delayed redraws cannot
