@@ -41,6 +41,10 @@ struct IdleFrame {
 
 final class IdleAnimationView: NSView {
     private let frames: [IdleFrame]
+    private let walkingFrames: [IdleFrame]
+    private var motion = PetMotion(x: 0, activity: .idle, facingRight: true)
+    var onTick: ((TimeInterval) -> PetMotion)?
+    private var poseStartedAt: CFTimeInterval = 0
     private var timer: Timer?
     private var startedAt: CFTimeInterval = 0
     private let frameDuration: CFTimeInterval = 0.4
@@ -48,9 +52,10 @@ final class IdleAnimationView: NSView {
 
     override var isOpaque: Bool { false }
 
-    init(frames: [IdleFrame]) {
-        precondition(!frames.isEmpty)
+    init(frames: [IdleFrame], walkingFrames: [IdleFrame]) {
+        precondition(!frames.isEmpty && walkingFrames.count == WalkCycle.count)
         self.frames = frames
+        self.walkingFrames = walkingFrames
         super.init(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
     }
 
@@ -59,8 +64,17 @@ final class IdleAnimationView: NSView {
     func start() {
         stop()
         startedAt = CACurrentMediaTime()
+        poseStartedAt = startedAt
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            self?.needsDisplay = true
+            guard let self = self else { return }
+            let now = CACurrentMediaTime()
+            if let next = self.onTick?(now - self.startedAt) {
+                if next.activity != self.motion.activity || next.facingRight != self.motion.facingRight {
+                    self.poseStartedAt = now
+                }
+                self.motion = next
+            }
+            self.needsDisplay = true
         }
         timer.tolerance = 0.002
         RunLoop.main.add(timer, forMode: .common)
@@ -79,10 +93,31 @@ final class IdleAnimationView: NSView {
         NSColor.clear.setFill()
         bounds.fill(using: .copy)
         NSGraphicsContext.current?.imageInterpolation = .high
+        guard motion.activity != .hidden else { return }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let transform = NSAffineTransform()
+        transform.translateX(by: 100, yBy: 100)
+        transform.rotate(byDegrees: motion.rotation)
+        transform.scaleX(by: motion.facingRight ? 1 : -1, yBy: 1)
+        transform.translateX(by: -100, yBy: -100)
+        transform.concat()
 
+        if motion.activity == .peeking {
+            let head = frames[3]
+            head.image.draw(in: head.drawingRect, from: .zero, operation: .sourceOver, fraction: 1)
+            return
+        }
         // Derive the frame from a monotonic clock so delayed redraws cannot
         // accumulate timing drift. Include the last-to-first transition.
-        let elapsed = max(0, CACurrentMediaTime() - startedAt)
+        let elapsed = max(0, CACurrentMediaTime() - poseStartedAt)
+        if motion.activity == .walking {
+            // A complete alternating-leg stride. Don't dissolve between feet:
+            // overlapping planted/swinging legs would look like extra limbs.
+            let frame = walkingFrames[WalkCycle.frameIndex(at: elapsed)]
+            frame.image.draw(in: frame.drawingRect, from: .zero, operation: .sourceOver, fraction: 1)
+            return
+        }
         let index = Int(elapsed / frameDuration) % frames.count
         let phase = elapsed.truncatingRemainder(dividingBy: frameDuration)
         let progress = max(0, min(1, (phase - (frameDuration - transitionDuration)) / transitionDuration))
