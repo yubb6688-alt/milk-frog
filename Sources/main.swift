@@ -25,8 +25,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             walkingFrames = []
         }
-        guard idleFrames.count == 4, walkingFrames.count == WalkCycle.count else {
-            NSLog("奶蛙：需要完整的四帧待机、八帧走路和两帧换脚过渡素材。")
+        let heldFrames = Bundle.main.url(forResource: "click-hands-v1", withExtension: "png")
+            .map { HandRaise.load(from: $0) } ?? []
+        guard idleFrames.count == 4, walkingFrames.count == WalkCycle.count, heldFrames.count == HandRaise.count else {
+            NSLog("奶蛙：缺少待机、走路、换脚或三帧举手素材。")
             NSApp.terminate(nil)
             return
         }
@@ -54,13 +56,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isReleasedWhenClosed = false
 
-        let animationView = IdleAnimationView(frames: idleFrames, walkingFrames: walkingFrames)
+        let animationView = IdleAnimationView(frames: idleFrames, walkingFrames: walkingFrames, heldFrames: heldFrames)
         window.contentView = animationView
         window.orderFrontRegardless()
         petWindow = window
 
         self.animationView = animationView
-        let origin = window.frame.origin
+        var origin = window.frame.origin
         let screenBounds = NSScreen.main?.frame ?? frame
         let demoDirection: Bool? = CommandLine.arguments.contains("--demo-right") ? true
             : (CommandLine.arguments.contains("--demo-left") ? false : nil)
@@ -69,8 +71,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var lastPhase = ""
         // Developer preview: inspect a full stride without the pet leaving the screen.
         let previewWalk = CommandLine.arguments.contains("--preview-walk")
+        let previewHeld = CommandLine.arguments.contains("--preview-held")
+        animationView.onDrop = { [weak window] newOrigin, elapsed in
+            origin = newOrigin
+            let center = NSPoint(x: newOrigin.x + 100, y: newOrigin.y + 100)
+            let screen = NSScreen.screens.first { $0.frame.contains(center) } ?? window?.screen ?? NSScreen.main
+            schedule.reset(origin: newOrigin.x, screen: screen?.frame ?? screenBounds, at: elapsed)
+        }
         animationView.onTick = { [weak window] elapsed in
-            let motion = previewWalk
+            let motion = previewHeld
+                ? PetMotion(x: origin.x, activity: .held, facingRight: true)
+                : previewWalk
                 ? PetMotion(x: origin.x, activity: .walking, facingRight: Int(elapsed / 5) % 2 == 0)
                 : schedule.sample(at: elapsed)
             window?.setFrameOrigin(NSPoint(x: motion.x, y: origin.y))

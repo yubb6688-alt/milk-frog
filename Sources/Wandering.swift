@@ -1,7 +1,7 @@
 import AppKit
 
 enum PetActivity: String {
-    case idle, walking, hidden, peeking
+    case idle, walking, hidden, peeking, held, clicked
 }
 
 struct PetMotion {
@@ -83,8 +83,8 @@ struct WalkingTrip {
 
 final class WanderSchedule {
     static let idleInterval: TimeInterval = 30
-    private let origin: CGFloat
-    private let screen: NSRect
+    private var origin: CGFloat
+    private var screen: NSRect
     private var nextStart: TimeInterval
     private var trip: WalkingTrip?
     private var tripStart: TimeInterval = 0
@@ -95,6 +95,14 @@ final class WanderSchedule {
         self.screen = screen
         firstDirection = demoDirection
         nextStart = demoDirection == nil ? Self.idleInterval : 2
+    }
+
+    func reset(origin: CGFloat, screen: NSRect, at elapsed: TimeInterval) {
+        self.origin = origin
+        self.screen = screen
+        trip = nil
+        firstDirection = nil
+        nextStart = elapsed + Self.idleInterval
     }
 
     func sample(at elapsed: TimeInterval) -> PetMotion {

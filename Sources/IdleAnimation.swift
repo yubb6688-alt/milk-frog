@@ -4,6 +4,7 @@ import QuartzCore
 struct IdleFrame {
     let image: NSImage
     let drawingRect: NSRect
+    private let hitBitmap: NSBitmapImageRep
 
     init?(image: NSImage) {
         guard let data = image.tiffRepresentation,
@@ -30,6 +31,7 @@ struct IdleFrame {
         let crop = CGRect(x: left, y: top, width: right - left + 1, height: bottom - top + 1)
         guard let cropped = cgImage.cropping(to: crop) else { return nil }
         self.image = NSImage(cgImage: cropped, size: crop.size)
+        hitBitmap = NSBitmapImageRep(cgImage: cropped)
 
         // Match the previous on-screen size; every pose has the same height,
         // horizontal center and ground line inside the unchanged 200 × 200 window.
@@ -37,11 +39,23 @@ struct IdleFrame {
         let width = crop.width * height / crop.height
         drawingRect = NSRect(x: (200 - width) / 2, y: 32, width: width, height: height)
     }
+
+    func contains(_ point: NSPoint) -> Bool {
+        guard drawingRect.contains(point) else { return false }
+        let u = (point.x - drawingRect.minX) / drawingRect.width
+        let v = (point.y - drawingRect.minY) / drawingRect.height
+        let x = min(hitBitmap.pixelsWide - 1, Int(u * CGFloat(hitBitmap.pixelsWide)))
+        let y = min(hitBitmap.pixelsHigh - 1, Int((1 - v) * CGFloat(hitBitmap.pixelsHigh)))
+        return (hitBitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1
+    }
 }
 
 final class IdleAnimationView: NSView {
     private let frames: [IdleFrame]
     private let walkingFrames: [IdleFrame]
+    private let heldFrames: [IdleFrame]
+    private var dragSession = PetDragSession()
+    var onDrop: ((NSPoint, TimeInterval) -> Void)?
     private var motion = PetMotion(x: 0, activity: .idle, facingRight: true)
     var onTick: ((TimeInterval) -> PetMotion)?
     private var poseStartedAt: CFTimeInterval = 0
@@ -52,14 +66,86 @@ final class IdleAnimationView: NSView {
 
     override var isOpaque: Bool { false }
 
-    init(frames: [IdleFrame], walkingFrames: [IdleFrame]) {
-        precondition(!frames.isEmpty && walkingFrames.count == WalkCycle.count)
+    init(frames: [IdleFrame], walkingFrames: [IdleFrame], heldFrames: [IdleFrame]) {
+        precondition(!frames.isEmpty && walkingFrames.count == WalkCycle.count && heldFrames.count == HandRaise.count)
         self.frames = frames
         self.walkingFrames = walkingFrames
+        self.heldFrames = heldFrames
         super.init(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func mouseDown(with event: NSEvent) {
+        guard !dragSession.isActive, let window = window else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard containsCharacter(at: point) else { return }
+        dragSession.begin(mouse: window.convertPoint(toScreen: event.locationInWindow),
+                          windowOrigin: window.frame.origin)
+        motion = PetMotion(x: window.frame.minX, activity: .held, facingRight: true)
+        poseStartedAt = CACurrentMediaTime()
+        NSCursor.closedHand.push()
+        needsDisplay = true
+        if CommandLine.arguments.contains("--debug-drag") {
+            NSLog("Drag: begin x=%.2f y=%.2f activity=held", window.frame.minX, window.frame.minY)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window = window,
+              let origin = dragSession.update(mouse: window.convertPoint(toScreen: event.locationInWindow)) else { return }
+        window.setFrameOrigin(origin)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        finishDrag()
+    }
+
+    private func finishDrag(allowClickReaction: Bool = true) {
+        guard dragSession.isActive else { return }
+        let now = CACurrentMediaTime()
+        let finishClick = allowClickReaction && !dragSession.didMove
+            && HandRaise.clickFrameIndex(at: now - poseStartedAt) != nil
+        dragSession.end()
+        NSCursor.pop()
+        if let origin = window?.frame.origin {
+            onDrop?(origin, now - startedAt)
+            motion = PetMotion(x: origin.x, activity: finishClick ? .clicked : .idle, facingRight: true)
+            if CommandLine.arguments.contains("--debug-drag") {
+                NSLog("Drag: end x=%.2f y=%.2f activity=%@", origin.x, origin.y, motion.activity.rawValue)
+            }
+        }
+        if !finishClick { poseStartedAt = now }
+        needsDisplay = true
+    }
+
+    private func containsCharacter(at point: NSPoint) -> Bool {
+        guard motion.activity != .hidden else { return false }
+        let transform = NSAffineTransform()
+        transform.translateX(by: 100, yBy: 100)
+        transform.rotate(byDegrees: motion.rotation)
+        transform.scaleX(by: motion.facingRight ? 1 : -1, yBy: 1)
+        transform.translateX(by: -100, yBy: -100)
+        transform.invert()
+        let point = transform.transform(point)
+        let elapsed = max(0, CACurrentMediaTime() - poseStartedAt)
+        switch motion.activity {
+        case .walking:
+            return walkingFrames[WalkCycle.frameIndex(at: elapsed)].contains(point)
+        case .peeking:
+            return frames[3].contains(point)
+        case .held:
+            return heldFrames[HandRaise.heldFrameIndex(at: elapsed)].contains(point)
+        case .clicked:
+            return heldFrames[HandRaise.clickFrameIndex(at: elapsed) ?? 0].contains(point)
+        default:
+            let index = Int(elapsed / frameDuration) % frames.count
+            return frames[index].contains(point) || frames[(index + 1) % frames.count].contains(point)
+        }
+    }
 
     func start() {
         stop()
@@ -68,7 +154,12 @@ final class IdleAnimationView: NSView {
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             let now = CACurrentMediaTime()
-            if let next = self.onTick?(now - self.startedAt) {
+            let finishingClick = self.motion.activity == .clicked
+                && HandRaise.clickFrameIndex(at: now - self.poseStartedAt) != nil
+            if !self.dragSession.isActive && !finishingClick, let next = self.onTick?(now - self.startedAt) {
+                if self.motion.activity == .clicked, CommandLine.arguments.contains("--debug-drag") {
+                    NSLog("Click: complete activity=%@", next.activity.rawValue)
+                }
                 if next.activity != self.motion.activity || next.facingRight != self.motion.facingRight {
                     self.poseStartedAt = now
                 }
@@ -83,6 +174,7 @@ final class IdleAnimationView: NSView {
     }
 
     func stop() {
+        finishDrag(allowClickReaction: false)
         timer?.invalidate()
         timer = nil
     }
@@ -96,6 +188,21 @@ final class IdleAnimationView: NSView {
         guard motion.activity != .hidden else { return }
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
+        if motion.activity == .held || motion.activity == .clicked {
+            let elapsed = CACurrentMediaTime() - poseStartedAt
+            let held = motion.activity == .held
+            let index = held ? HandRaise.heldFrameIndex(at: elapsed) : (HandRaise.clickFrameIndex(at: elapsed) ?? 0)
+            let pose = held ? HeldPose.sample(at: elapsed) : HeldPose(angle: 0, offset: .zero)
+            let anchor = dragSession.grabOffset ?? NSPoint(x: 100, y: 120)
+            let struggle = NSAffineTransform()
+            struggle.translateX(by: anchor.x + pose.offset.x, yBy: anchor.y + pose.offset.y)
+            struggle.rotate(byDegrees: pose.angle)
+            struggle.translateX(by: -anchor.x, yBy: -anchor.y)
+            struggle.concat()
+            let frame = heldFrames[index]
+            frame.image.draw(in: frame.drawingRect, from: .zero, operation: .sourceOver, fraction: 1)
+            return
+        }
         let transform = NSAffineTransform()
         transform.translateX(by: 100, yBy: 100)
         transform.rotate(byDegrees: motion.rotation)
