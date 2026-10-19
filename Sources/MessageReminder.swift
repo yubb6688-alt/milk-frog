@@ -22,9 +22,16 @@ final class MessageReminderController {
     private let content = MessageReminderView(frame: NSRect(x: 0, y: 0, width: 300, height: 278))
     private var timer: Timer?
     private var startedAt: CFTimeInterval?
-    var isActive: Bool { startedAt.map { CACurrentMediaTime() - $0 < MessageCelebration.duration } ?? false }
+    private var clock = AnimationClock()
+    private var now: TimeInterval { clock.now(at: CACurrentMediaTime()) }
+    var isActive: Bool { startedAt.map { now - $0 < MessageCelebration.duration } ?? false }
+    var isCelebrating: Bool { isActive && content.celebrates }
+
+    func setPaused(_ value: Bool) {
+        clock.setPaused(value, at: CACurrentMediaTime())
+    }
     var frameIndex: Int { MessageCelebration.frameIndex(at: elapsed) }
-    private var elapsed: TimeInterval { startedAt.map { CACurrentMediaTime() - $0 } ?? 0 }
+    private var elapsed: TimeInterval { startedAt.map { now - $0 } ?? 0 }
 
     init(petWindow: NSWindow) {
         self.petWindow = petWindow
@@ -41,10 +48,12 @@ final class MessageReminderController {
         window.contentView = content
     }
 
-    func show(message: String) {
+    func show(message: String, title: String = "新消息来啦！", celebrates: Bool = true) {
         timer?.invalidate()
-        startedAt = CACurrentMediaTime()
+        startedAt = now
         content.message = message
+        content.heading = title
+        content.celebrates = celebrates
         if let petWindow { petWindow.addChildWindow(window, ordered: .above) }
         refresh()
         window.orderFrontRegardless()
@@ -58,7 +67,7 @@ final class MessageReminderController {
         window.setFrame(MessageCelebration.overlayFrame(pet: petWindow.frame), display: false)
         content.elapsed = elapsed
         // The bubble fades, but neither the pet nor the overlay changes scale.
-        window.alphaValue = min(1, elapsed / 0.15, (MessageCelebration.duration - elapsed) / 0.35)
+        window.alphaValue = clock.isPaused ? 1 : min(1, elapsed / 0.15, (MessageCelebration.duration - elapsed) / 0.35)
         content.needsDisplay = true
     }
 
@@ -75,6 +84,8 @@ final class MessageReminderController {
 
 final class MessageReminderView: NSView {
     var message = "你有一条新消息，记得看看哦！"
+    var heading = "新消息来啦！"
+    var celebrates = true
     var elapsed: TimeInterval = 0
     override var isOpaque: Bool { false }
 
@@ -97,7 +108,7 @@ final class MessageReminderView: NSView {
         tail.close()
         tail.fill()
         NSGraphicsContext.restoreGraphicsState()
-        ("新消息来啦！" as NSString).draw(at: NSPoint(x: 38, y: 235), withAttributes: [
+        (heading as NSString).draw(at: NSPoint(x: 38, y: 235), withAttributes: [
             .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
             .foregroundColor: NSColor(calibratedRed: 0.42, green: 0.30, blue: 0.13, alpha: 1)
         ])
@@ -110,6 +121,7 @@ final class MessageReminderView: NSView {
 
         // Two short showers of petals originate beside the raised hands.
         // Deterministic particles avoid jitter between redraws.
+        guard celebrates else { return }
         let colors: [NSColor] = [.systemPink, .systemOrange, .systemYellow, .systemMint, .systemPurple]
         for burst in 0..<2 {
             for i in 0..<28 {

@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private var inputMonitor: InputActivityMonitor?
     private var typingTestWindow: NSWindow?
     private var messageReminder: MessageReminderController?
+    private var chatController: ChatWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         func loadFrames(_ prefix: String) -> [IdleFrame] {
@@ -61,6 +62,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let accessItem = NSMenuItem(title: "启用输入陪伴…", action: #selector(enableTypingAccess), keyEquivalent: "")
         accessItem.target = self
         appMenu.addItem(accessItem)
+        let chatItem = NSMenuItem(title: "聊天", action: #selector(showChat), keyEquivalent: "")
+        chatItem.target = self
+        appMenu.addItem(chatItem)
         let messageItem = NSMenuItem(title: "演示消息提醒", action: #selector(showDemoMessage), keyEquivalent: "")
         messageItem.target = self
         appMenu.addItem(messageItem)
@@ -68,6 +72,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         appMenu.addItem(withTitle: "退出奶蛙", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
         menu.addItem(appMenuItem)
+        let editItem = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
+        let editMenu = NSMenu(title: "编辑")
+        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+        menu.addItem(editItem)
         NSApp.mainMenu = menu
 
         let frame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1000, height: 700)
@@ -93,7 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         petWindow = window
         let reminder = MessageReminderController(petWindow: window)
         messageReminder = reminder
-        animationView.onDemoMessage = { [weak self] in self?.showDemoMessage() }
+        animationView.onGreeting = { [weak self] in self?.showGreeting() }
+        animationView.onChat = { [weak self] in self?.showChat() }
+        animationView.onTogglePause = { [weak self] in self?.toggleAnimationPause() }
 
         self.animationView = animationView
         var origin = window.frame.origin
@@ -130,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             schedule.reset(origin: newOrigin.x, screen: homeScreen, at: elapsed)
         }
         animationView.onTick = { [weak window] elapsed in
-            if reminder.isActive {
+            if reminder.isCelebrating {
                 origin = window?.frame.origin ?? origin
                 typingApproach = nil
                 schedule.reset(origin: origin.x, screen: homeScreen, at: elapsed)
@@ -181,6 +197,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         if CommandLine.arguments.contains("--demo-message") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.showDemoMessage() }
         }
+    }
+
+    @objc private func showChat() {
+        if chatController == nil, let avatar = idleFrames.first?.image {
+            chatController = ChatWindowController(avatar: avatar)
+        }
+        chatController?.present()
+    }
+
+    private func showGreeting() {
+        messageReminder?.show(message: "呱呱呱", title: "奶蛙说", celebrates: false)
+    }
+
+    private func toggleAnimationPause() {
+        guard let view = animationView else { return }
+        let paused = !view.isPaused
+        view.setPaused(paused)
+        messageReminder?.setPaused(paused)
     }
 
     @objc private func showDemoMessage() {
@@ -237,6 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        chatController?.chat.session.stop()
         messageReminder?.stop()
         inputMonitor?.stop()
         animationView?.stop()

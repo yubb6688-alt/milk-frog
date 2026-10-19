@@ -33,6 +33,20 @@ struct MessageReminderTests {
         controller.stop()
         assert(!controller.isActive && (pet.childWindows?.isEmpty ?? true))
         assert(pet.frame == original)
+        controller.setPaused(true)
+        controller.show(message: "呱呱呱", title: "奶蛙说", celebrates: false)
+        assert(controller.isActive && !controller.isCelebrating)
+        let greetingWindow = pet.childWindows![0]
+        let greetingView = greetingWindow.contentView as! MessageReminderView
+        assert(greetingWindow.isVisible && greetingWindow.alphaValue == 1)
+        assert(greetingView.message == "呱呱呱" && greetingView.heading == "奶蛙说")
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        assert(greetingView.elapsed == 0, "Paused overlay animation must also freeze")
+        controller.setPaused(false)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        assert(greetingView.elapsed > 0)
+        controller.stop()
+        print("PASS: greeting shows exact text without celebration, remains visible while paused, and resumes its timer")
         print("PASS: 200×200 pet unchanged; all happy poses at 132px; overlay is separate, click-through, repeatable and dismissible")
 
         let preview = NSImage(size: NSSize(width: 900, height: 278))

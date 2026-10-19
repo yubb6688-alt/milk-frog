@@ -56,7 +56,18 @@ final class IdleAnimationView: NSView {
     private let heldFrames: [IdleFrame]
     private let workingFrames: [IdleFrame]
     private let cheeringFrames: [IdleFrame]
-    var onDemoMessage: (() -> Void)?
+    var onGreeting: (() -> Void)?
+    var onChat: (() -> Void)?
+    var onTogglePause: (() -> Void)?
+    private var clock = AnimationClock()
+    var isPaused: Bool { clock.isPaused }
+    private var animationNow: TimeInterval { clock.now(at: CACurrentMediaTime()) }
+
+    func setPaused(_ value: Bool) {
+        if value { finishDrag(allowClickReaction: false) }
+        clock.setPaused(value, at: CACurrentMediaTime())
+        needsDisplay = true
+    }
     private var dragSession = PetDragSession()
     var onDrop: ((NSPoint, TimeInterval) -> Void)?
     private var motion = PetMotion(x: 0, activity: .idle, facingRight: true)
@@ -89,23 +100,39 @@ final class IdleAnimationView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         guard containsCharacter(at: convert(event.locationInWindow, from: nil)) else { return }
-        let menu = NSMenu()
-        let item = NSMenuItem(title: "演示消息提醒", action: #selector(demoMessage), keyEquivalent: "")
-        item.target = self
-        menu.addItem(item)
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        NSMenu.popUpContextMenu(makeContextMenu(), with: event, for: self)
     }
 
-    @objc private func demoMessage() { onDemoMessage?() }
+    func makeContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        let greeting = NSMenuItem(title: "打招呼", action: #selector(greet), keyEquivalent: "")
+        greeting.target = self
+        menu.addItem(greeting)
+        let chat = NSMenuItem(title: "聊天", action: #selector(openChat), keyEquivalent: "")
+        chat.target = self
+        menu.addItem(chat)
+        let pause = NSMenuItem(title: isPaused ? "继续" : "暂停", action: #selector(togglePause), keyEquivalent: "")
+        pause.target = self
+        menu.addItem(pause)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        quit.target = NSApp
+        menu.addItem(quit)
+        return menu
+    }
+
+    @objc private func greet() { onGreeting?() }
+    @objc private func openChat() { onChat?() }
+    @objc private func togglePause() { onTogglePause?() }
 
     override func mouseDown(with event: NSEvent) {
-        guard !dragSession.isActive, let window = window else { return }
+        guard !isPaused, !dragSession.isActive, let window = window else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard containsCharacter(at: point) else { return }
         dragSession.begin(mouse: window.convertPoint(toScreen: event.locationInWindow),
                           windowOrigin: window.frame.origin)
         motion = PetMotion(x: window.frame.minX, activity: .held, facingRight: true)
-        poseStartedAt = CACurrentMediaTime()
+        poseStartedAt = animationNow
         NSCursor.closedHand.push()
         needsDisplay = true
         if CommandLine.arguments.contains("--debug-drag") {
@@ -125,7 +152,7 @@ final class IdleAnimationView: NSView {
 
     private func finishDrag(allowClickReaction: Bool = true) {
         guard dragSession.isActive else { return }
-        let now = CACurrentMediaTime()
+        let now = animationNow
         let finishClick = allowClickReaction && !dragSession.didMove
             && HandRaise.clickFrameIndex(at: now - poseStartedAt) != nil
         dragSession.end()
@@ -150,7 +177,7 @@ final class IdleAnimationView: NSView {
         transform.translateX(by: -100, yBy: -100)
         transform.invert()
         let point = transform.transform(point)
-        let elapsed = max(0, CACurrentMediaTime() - poseStartedAt)
+        let elapsed = max(0, animationNow - poseStartedAt)
         switch motion.activity {
         case .walking:
             return walkingFrames[WalkCycle.frameIndex(at: elapsed)].contains(point)
@@ -172,11 +199,11 @@ final class IdleAnimationView: NSView {
 
     func start() {
         stop()
-        startedAt = CACurrentMediaTime()
+        startedAt = animationNow
         poseStartedAt = startedAt
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            let now = CACurrentMediaTime()
+            guard let self = self, !self.isPaused else { return }
+            let now = self.animationNow
             let finishingClick = self.motion.activity == .clicked
                 && HandRaise.clickFrameIndex(at: now - self.poseStartedAt) != nil
             if !self.dragSession.isActive && !finishingClick, let next = self.onTick?(now - self.startedAt) {
@@ -222,7 +249,7 @@ final class IdleAnimationView: NSView {
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         if motion.activity == .held || motion.activity == .clicked {
-            let elapsed = CACurrentMediaTime() - poseStartedAt
+            let elapsed = animationNow - poseStartedAt
             let held = motion.activity == .held
             let index = held ? HandRaise.heldFrameIndex(at: elapsed) : (HandRaise.clickFrameIndex(at: elapsed) ?? 0)
             let pose = held ? HeldPose.sample(at: elapsed) : HeldPose(angle: 0, offset: .zero)
@@ -250,7 +277,7 @@ final class IdleAnimationView: NSView {
         }
         if motion.activity == .working {
             let frame = workingFrames[motion.spriteIndex]
-            let progress = min(1, max(0, (CACurrentMediaTime() - workingTransitionAt) / 0.14))
+            let progress = min(1, max(0, (animationNow - workingTransitionAt) / 0.14))
             if let previous = workingTransitionFrom, progress < 1 {
                 let old = workingFrames[previous]
                 old.image.draw(in: old.drawingRect, from: .zero, operation: .plusLighter, fraction: 1 - progress)
@@ -267,7 +294,7 @@ final class IdleAnimationView: NSView {
         }
         // Derive the frame from a monotonic clock so delayed redraws cannot
         // accumulate timing drift. Include the last-to-first transition.
-        let elapsed = max(0, CACurrentMediaTime() - poseStartedAt)
+        let elapsed = max(0, animationNow - poseStartedAt)
         if motion.activity == .walking {
             // A complete alternating-leg stride. Don't dissolve between feet:
             // overlapping planted/swinging legs would look like extra limbs.
