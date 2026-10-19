@@ -1,0 +1,1 @@
+87bc13539e6b650a8bcff401dc78d00edcee8d3143d1d52d54a327c0b88c86e6  MilkFrog-0.1.0-macOS-universal.dmg
